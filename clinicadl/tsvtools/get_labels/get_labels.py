@@ -286,7 +286,7 @@ def get_labels(
     if output_dir == None:
         results_directory = Path(bids_directory).parents[0]
     else:
-        results_directory = output_dir
+        results_directory = Path(output_dir)
     output_tsv = results_directory / "labels.tsv"
 
     commandline_to_json(
