@@ -51,6 +51,7 @@ class AutoEncoder(Network):
     def forward(self, x):
         indices_list = []
         pad_list = []
+
         for layer in self.encoder:
             if (
                 (isinstance(layer, PadMaxPool3d) or isinstance(layer, PadMaxPool2d))
@@ -82,7 +83,7 @@ class AutoEncoder(Network):
 
     def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True):
 
-        images = input_dict["image"].to(self.device)
+        images = input_dict["image"].to(self.device, non_blocking=True)
         train_output = self.predict(images)
         loss = criterion(train_output, images)
 

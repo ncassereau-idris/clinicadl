@@ -584,6 +584,8 @@ class MapsManager:
                 batch_size=self.batch_size,
                 sampler=train_sampler,
                 num_workers=self.n_proc,
+                pin_memory=True,
+                persistent_workers=True,
                 worker_init_fn=pl_worker_init_function,
             )
             logger.debug(f"Train loader size is {len(train_loader)}")
@@ -746,6 +748,7 @@ class MapsManager:
             transfer_path=self.transfer_path,
             transfer_selection=self.transfer_selection_metric,
         )
+        logger.info(torch.cuda.get_device_name(model.device))
         criterion = self.task_manager.get_criterion(self.loss)
         logger.debug(f"Criterion for {self.network_task} is {criterion}")
         optimizer = self._init_optimizer(model, split=split, resume=resume)
@@ -771,58 +774,100 @@ class MapsManager:
 
         retain_best = RetainBest(selection_metrics=list(self.selection_metrics))
 
+
+        from torch.cuda.amp import autocast, GradScaler
+        scaler = GradScaler()
+
+        use_profiler = True
+        if use_profiler:
+            from torch.profiler import (
+                profile,
+                tensorboard_trace_handler,
+                ProfilerActivity,
+                schedule,
+            )
+            import datetime
+            from pathlib import Path
+            profiler = profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                schedule=schedule(wait=1, warmup=1, active=10, repeat=1),
+                on_trace_ready=tensorboard_trace_handler(
+                    Path("profiler") /
+                    f"clinica_dl_{str(datetime.datetime.now().time())[:5]}"
+                ),
+                profile_memory=True,
+                record_shapes=False, 
+                with_stack=False,
+                with_flops=False
+            )
+        else:
+            from contextlib import nullcontext
+            profiler = nullcontext()
+
+        acc_loss = torch.tensor(0., device="cuda")
+
         while epoch < self.epochs and not early_stopping.step(metrics_valid["loss"]):
             logger.info(f"Beginning epoch {epoch}.")
 
             model.zero_grad()
             evaluation_flag, step_flag = True, True
+            with profiler:
+                for i, data in enumerate(train_loader):
+                    if i >= 12:
+                        break
+                    logger.info(f"Step {i+1} / {len(train_loader)}")
+                    with autocast():
+                        _, loss_dict = model.compute_outputs_and_loss(data, criterion)
+                    logger.debug(f"Train loss dictionnary {loss_dict}")
+                    loss = loss_dict["loss"]
+                    # loss.backward()
+                    scaler.scale(loss).backward()
+                    acc_loss += loss.detach()
+                    logger.info(f"Accloss: {acc_loss}")
+                    if use_profiler:
+                        profiler.step()
 
-            for i, data in enumerate(train_loader):
+                    if (i + 1) % self.accumulation_steps == 0:
+                        step_flag = False
+                        # optimizer.step()
+                        scaler.step(optimizer)
+                        scaler.update()
+                        optimizer.zero_grad()
 
-                _, loss_dict = model.compute_outputs_and_loss(data, criterion)
-                logger.debug(f"Train loss dictionnary {loss_dict}")
-                loss = loss_dict["loss"]
-                loss.backward()
+                        del loss
 
-                if (i + 1) % self.accumulation_steps == 0:
-                    step_flag = False
-                    optimizer.step()
-                    optimizer.zero_grad()
+                        # Evaluate the model only when no gradients are accumulated
+                        if (
+                            self.evaluation_steps != 0
+                            and (i + 1) % self.evaluation_steps == 0
+                        ):
+                            evaluation_flag = False
 
-                    del loss
+                            _, metrics_train = self.task_manager.test(
+                                model, train_loader, criterion
+                            )
+                            _, metrics_valid = self.task_manager.test(
+                                model, valid_loader, criterion
+                            )
 
-                    # Evaluate the model only when no gradients are accumulated
-                    if (
-                        self.evaluation_steps != 0
-                        and (i + 1) % self.evaluation_steps == 0
-                    ):
-                        evaluation_flag = False
+                            model.train()
+                            train_loader.dataset.train()
 
-                        _, metrics_train = self.task_manager.test(
-                            model, train_loader, criterion
-                        )
-                        _, metrics_valid = self.task_manager.test(
-                            model, valid_loader, criterion
-                        )
-
-                        model.train()
-                        train_loader.dataset.train()
-
-                        log_writer.step(
-                            epoch,
-                            i,
-                            metrics_train,
-                            metrics_valid,
-                            len(train_loader),
-                        )
-                        logger.info(
-                            f"{self.mode} level training loss is {metrics_train['loss']} "
-                            f"at the end of iteration {i}"
-                        )
-                        logger.info(
-                            f"{self.mode} level validation loss is {metrics_valid['loss']} "
-                            f"at the end of iteration {i}"
-                        )
+                            log_writer.step(
+                                epoch,
+                                i,
+                                metrics_train,
+                                metrics_valid,
+                                len(train_loader),
+                            )
+                            logger.info(
+                                f"{self.mode} level training loss is {metrics_train['loss']} "
+                                f"at the end of iteration {i}"
+                            )
+                            logger.info(
+                                f"{self.mode} level validation loss is {metrics_valid['loss']} "
+                                f"at the end of iteration {i}"
+                            )
 
             # If no step has been performed, raise Exception
             if step_flag:
@@ -843,6 +888,8 @@ class MapsManager:
                 optimizer.step()
                 optimizer.zero_grad()
 
+            logger.info(f"Loss: {acc_loss}")
+            exit(0)
             # Always test the results and save them once at the end of the epoch
             model.zero_grad()
             logger.debug(f"Last checkpoint at the end of the epoch {epoch}")
