@@ -172,6 +172,7 @@ class TaskManager:
         dataloader: DataLoader,
         criterion: _Loss,
         use_labels: bool = True,
+        amp: bool = False
     ) -> Tuple[pd.DataFrame, Dict[str, float]]:
         """
         Computes the predictions and evaluation metrics.
@@ -182,6 +183,7 @@ class TaskManager:
             criterion: function to calculate the loss.
             use_labels: If True the true_label will be written in output DataFrame
                 and metrics dict will be created.
+            amp: If True, use PyTorch's automatic mixed precision
         Returns:
             the results and metrics on the image level.
         """
@@ -193,13 +195,13 @@ class TaskManager:
         with torch.no_grad():
             for i, data in enumerate(dataloader):
                 outputs, loss_dict = model.compute_outputs_and_loss(
-                    data, criterion, use_labels=use_labels
+                    data, criterion, use_labels=use_labels, amp=amp
                 )
-                total_loss += loss_dict["loss"].item()
+                total_loss += loss_dict["loss"].float().item()
 
                 # Generate detailed DataFrame
                 for idx in range(len(data["participant_id"])):
-                    row = self.generate_test_row(idx, data, outputs)
+                    row = self.generate_test_row(idx, data, outputs.float())
                     row_df = pd.DataFrame(row, columns=self.columns)
                     results_df = pd.concat([results_df, row_df])
 

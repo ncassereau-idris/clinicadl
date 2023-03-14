@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import torch
+from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 
 from clinicadl.utils.caps_dataset.data import (
@@ -723,6 +724,34 @@ class MapsManager:
 
             self._erase_tmp(split)
 
+    def _init_profiler(self):
+        if self.profiler:
+            from torch.profiler import (
+                profile,
+                tensorboard_trace_handler,
+                ProfilerActivity,
+                schedule,
+            )
+            from datetime import datetime
+            from pathlib import Path
+            profiler = profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                schedule=schedule(wait=1, warmup=1, active=10, repeat=1),
+                on_trace_ready=tensorboard_trace_handler(
+                    Path("profiler") /
+                    f"clinica_dl_amp_async_{str(datetime.now().time())[:8]}"
+                ),
+                profile_memory=True,
+                record_shapes=False,
+                with_stack=False,
+                with_flops=False
+            )
+        else:
+            from contextlib import nullcontext
+            profiler = nullcontext()
+            profiler.step = lambda *args, **kwargs: None
+        return profiler
+
     def _train(
         self,
         train_loader,
@@ -748,7 +777,7 @@ class MapsManager:
             transfer_path=self.transfer_path,
             transfer_selection=self.transfer_selection_metric,
         )
-        logger.info(torch.cuda.get_device_name(model.device))
+
         criterion = self.task_manager.get_criterion(self.loss)
         logger.debug(f"Criterion for {self.network_task} is {criterion}")
         optimizer = self._init_optimizer(model, split=split, resume=resume)
@@ -775,37 +804,10 @@ class MapsManager:
         retain_best = RetainBest(selection_metrics=list(self.selection_metrics))
 
 
-        from torch.cuda.amp import autocast, GradScaler
         scaler = GradScaler()
-
-        use_profiler = True
-        if use_profiler:
-            from torch.profiler import (
-                profile,
-                tensorboard_trace_handler,
-                ProfilerActivity,
-                schedule,
-            )
-            import datetime
-            from pathlib import Path
-            profiler = profile(
-                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                schedule=schedule(wait=1, warmup=1, active=10, repeat=1),
-                on_trace_ready=tensorboard_trace_handler(
-                    Path("profiler") /
-                    f"clinica_dl_{str(datetime.datetime.now().time())[:5]}"
-                ),
-                profile_memory=True,
-                record_shapes=False, 
-                with_stack=False,
-                with_flops=False
-            )
-        else:
-            from contextlib import nullcontext
-            profiler = nullcontext()
+        profiler = self._init_profiler()
 
         acc_loss = torch.tensor(0., device="cuda")
-
         while epoch < self.epochs and not early_stopping.step(metrics_valid["loss"]):
             logger.info(f"Beginning epoch {epoch}.")
 
@@ -813,23 +815,20 @@ class MapsManager:
             evaluation_flag, step_flag = True, True
             with profiler:
                 for i, data in enumerate(train_loader):
-                    if i >= 12:
-                        break
+                    if i >= 100:
+                        exit(0)
                     logger.info(f"Step {i+1} / {len(train_loader)}")
-                    with autocast():
-                        _, loss_dict = model.compute_outputs_and_loss(data, criterion)
+                    _, loss_dict = model.compute_outputs_and_loss(data, criterion, amp=self.amp)
                     logger.debug(f"Train loss dictionnary {loss_dict}")
                     loss = loss_dict["loss"]
                     # loss.backward()
                     scaler.scale(loss).backward()
                     acc_loss += loss.detach()
                     logger.info(f"Accloss: {acc_loss}")
-                    if use_profiler:
-                        profiler.step()
+                    profiler.step()
 
                     if (i + 1) % self.accumulation_steps == 0:
                         step_flag = False
-                        # optimizer.step()
                         scaler.step(optimizer)
                         scaler.update()
                         optimizer.zero_grad()
@@ -889,13 +888,13 @@ class MapsManager:
                 optimizer.zero_grad()
 
             logger.info(f"Loss: {acc_loss}")
-            exit(0)
+
             # Always test the results and save them once at the end of the epoch
             model.zero_grad()
             logger.debug(f"Last checkpoint at the end of the epoch {epoch}")
 
-            _, metrics_train = self.task_manager.test(model, train_loader, criterion)
-            _, metrics_valid = self.task_manager.test(model, valid_loader, criterion)
+            _, metrics_train = self.task_manager.test(model, train_loader, criterion, amp=self.amp)
+            _, metrics_valid = self.task_manager.test(model, valid_loader, criterion, amp=self.amp)
 
             model.train()
             train_loader.dataset.train()
@@ -1019,7 +1018,7 @@ class MapsManager:
             )
 
             prediction_df, metrics = self.task_manager.test(
-                model, dataloader, criterion, use_labels=use_labels
+                model, dataloader, criterion, use_labels=use_labels, amp=self.amp
             )
             if use_labels:
                 if network is not None:
