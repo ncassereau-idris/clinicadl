@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime
 from glob import glob
 from logging import getLogger
-from os import listdir, makedirs, path
+from os import listdir, makedirs, path, environ
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
@@ -112,6 +112,34 @@ class MapsManager:
             return self.parameters[name]
         else:
             raise AttributeError(f"'MapsManager' object has no attribute '{name}'")
+
+    def _init_ddp(self, gpu: bool = True):
+
+        def get_first_host(hostlist: str):
+            from re import findall, sub, split
+            regex = "\[([^[\]]*)\]"
+            all_replacement: list[str] = findall(regex, hostlist)
+            new_values = [split("-|,", element)[0] for element in all_replacement]
+            for i in range(len(new_values)):
+                hostlist = sub(regex, new_values[i], hostlist, count=1)
+            return hostlist.split(",")[0]
+
+        self.rank = int(environ["SLURM_PROCID"])
+        self.local_rank = int(environ["SLURM_LOCALID"])
+        self.world_size = int(environ["SLURM_NTASKS"])
+        self.master = self.rank == 0
+        hostnames = environ["SLURM_JOB_NODELIST"]
+        gpu_ids = environ['SLURM_STEP_GPUS'].split(",")
+        environ['MASTER_ADDR'] = get_first_host(hostnames)
+        environ['MASTER_PORT'] = str(12345 + int(min(gpu_ids)))  # to avoid port conflict on the same node
+        dist.init_process_group(
+            backend='nccl' if gpu else "mpi",
+            init_method='env://',
+            world_size=self.world_size,
+            rank=self.rank
+        )
+        if gpu:
+            torch.cuda.set_device(self.local_rank)
 
     def train(self, split_list: List[int] = None, overwrite: bool = False):
         """
