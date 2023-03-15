@@ -145,7 +145,7 @@ class MapsManager:
         environ['MASTER_ADDR'] = cluster_resolver.master_addr
         environ['MASTER_PORT'] = str(cluster_resolver.master_port)
         dist.init_process_group(
-            backend='nccl' if gpu else "mpi",
+            backend='nccl' if gpu else "gloo",
             init_method='env://',
             world_size=self.world_size,
             rank=self.rank
