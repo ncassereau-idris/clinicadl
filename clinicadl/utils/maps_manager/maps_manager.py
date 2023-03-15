@@ -35,6 +35,7 @@ from clinicadl.utils.maps_manager.maps_manager_utils import (
     add_default_values,
     read_json,
 )
+from clinicadl.utils.maps_manager.cluster_resolver import SlurmClusterResolver
 from clinicadl.utils.metric_module import RetainBest
 from clinicadl.utils.network.network import Network
 from clinicadl.utils.seed import get_seed, pl_worker_init_function, seed_everything
@@ -136,24 +137,13 @@ class MapsManager:
             raise AttributeError(f"'MapsManager' object has no attribute '{name}'")
 
     def _init_ddp(self, gpu: bool = True):
-
-        def get_first_host(hostlist: str):
-            from re import findall, sub, split
-            regex = "\[([^[\]]*)\]"
-            all_replacement: list[str] = findall(regex, hostlist)
-            new_values = [split("-|,", element)[0] for element in all_replacement]
-            for i in range(len(new_values)):
-                hostlist = sub(regex, new_values[i], hostlist, count=1)
-            return hostlist.split(",")[0]
-
-        self.rank = int(environ["SLURM_PROCID"])
-        self.local_rank = int(environ["SLURM_LOCALID"])
-        self.world_size = int(environ["SLURM_NTASKS"])
-        self.master = self.rank == 0
-        hostnames = environ["SLURM_JOB_NODELIST"]
-        gpu_ids = environ['SLURM_STEP_GPUS'].split(",")
-        environ['MASTER_ADDR'] = get_first_host(hostnames)
-        environ['MASTER_PORT'] = str(12345 + int(min(gpu_ids)))  # to avoid port conflict on the same node
+        cluster_resolver = SlurmClusterResolver()
+        self.rank = cluster_resolver.rank
+        self.local_rank = cluster_resolver.local_rank
+        self.world_size = cluster_resolver.world_size
+        self.master = cluster_resolver.master
+        environ['MASTER_ADDR'] = cluster_resolver.master_addr
+        environ['MASTER_PORT'] = str(cluster_resolver.master_port)
         dist.init_process_group(
             backend='nccl' if gpu else "mpi",
             init_method='env://',
