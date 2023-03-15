@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.nn.functional import softmax
 from torch.utils.data import sampler
+from torch.utils.data.distributed import DistributedSampler
 
 from clinicadl.utils.exceptions import ClinicaDLArgumentError
 
@@ -78,7 +79,7 @@ class ClassificationManager(TaskManager):
         return len(label_code)
 
     @staticmethod
-    def generate_sampler(dataset, sampler_option="random", n_bins=5):
+    def generate_sampler(dataset, sampler_option="random", n_bins=5, world_size=None, rank=None):
         df = dataset.df
         labels = df[dataset.label].unique()
         codes = set()
@@ -99,7 +100,10 @@ class ClassificationManager(TaskManager):
             weights += [weight_per_class[key]] * dataset.elem_per_image
 
         if sampler_option == "random":
-            return sampler.RandomSampler(weights)
+            if world_size is not None and rank is not None:
+                return DistributedSampler(weights, num_replicas=world_size, rank=rank, shuffle=True)
+            else:
+                return sampler.RandomSampler(weights)
         elif sampler_option == "weighted":
             return sampler.WeightedRandomSampler(weights, len(weights))
         else:

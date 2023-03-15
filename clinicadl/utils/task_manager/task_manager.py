@@ -6,6 +6,7 @@ import torch
 from torch import Tensor
 from torch.nn.modules.loss import _Loss
 from torch.utils.data import DataLoader, Sampler
+import torch.distributed as dist
 
 from clinicadl.utils.caps_dataset.data import CapsDataset
 from clinicadl.utils.metric_module import MetricModule
@@ -132,7 +133,8 @@ class TaskManager:
     @staticmethod
     @abstractmethod
     def generate_sampler(
-        dataset: CapsDataset, sampler_option: str = "random", n_bins: int = 5
+        dataset: CapsDataset, sampler_option: str = "random", n_bins: int = 5,
+        world_size: Optional[int] = None, rank: Optional[int] = None
     ) -> Sampler:
         """
         Returns sampler according to the wanted options.
@@ -141,6 +143,8 @@ class TaskManager:
             dataset: the dataset to sample from.
             sampler_option: choice of sampler.
             n_bins: number of bins to used for a continuous variable (regression task).
+            world_size: degree of data parallelism in case of DDP usage
+            rank: index of the current process in the communicator
         Returns:
              callable given to the training data loader.
         """
