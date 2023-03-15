@@ -10,6 +10,9 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
+from torch.utils.data.distributed import DistributedSampler
 from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 
@@ -41,6 +44,17 @@ logger = getLogger("clinicadl.maps_manager")
 
 level_list: List[str] = ["warning", "info", "debug"]
 # TODO save weights on CPU for better compatibility
+
+
+class DDP(DistributedDataParallel):
+    def compute_outputs_and_loss(self, *args, **kwargs):
+        return self.module.compute_outputs_and_loss(*args, **kwargs)
+
+    def predict(self, *args, **kwargs):
+        return self.module.predict(*args, **kwargs)
+
+    def transfer_weights(self, *args, **kwargs):
+        return self.module.transfer_weights(*args, **kwargs)
 
 
 class MapsManager:
@@ -612,7 +626,10 @@ class MapsManager:
                 label=self.label,
                 label_code=self.label_code,
             )
-            train_sampler = self.task_manager.generate_sampler(data_train, self.sampler)
+            train_sampler = self.task_manager.generate_sampler(
+                data_train, self.sampler, world_size=self.world_size, rank=self.rank
+            )
+
             logger.debug(
                 f"Getting train and validation loader with batch size {self.batch_size}"
             )
@@ -622,15 +639,22 @@ class MapsManager:
                 sampler=train_sampler,
                 num_workers=self.n_proc,
                 pin_memory=True,
-                persistent_workers=True,
                 worker_init_fn=pl_worker_init_function,
             )
             logger.debug(f"Train loader size is {len(train_loader)}")
+            valid_sampler = DistributedSampler(
+                data_valid,
+                num_replicas=self.world_size,
+                rank=self.rank,
+                shuffle=False
+            )
             valid_loader = DataLoader(
                 data_valid,
                 batch_size=self.batch_size,
                 shuffle=False,
                 num_workers=self.n_proc,
+                pin_memory=True,
+                sampler=valid_sampler
             )
             logger.debug(f"Validation loader size is {len(valid_loader)}")
 
@@ -770,12 +794,14 @@ class MapsManager:
             )
             from datetime import datetime
             from pathlib import Path
+            if self.ddp:
+                dist.barrier() # make sure they are all synchronized so they have the same profiler file
+            time = str(datetime.now().time())[:8]
             profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 schedule=schedule(wait=1, warmup=1, active=10, repeat=1),
                 on_trace_ready=tensorboard_trace_handler(
-                    Path("profiler") /
-                    f"clinica_dl_amp_async_{str(datetime.now().time())[:8]}"
+                    Path("profiler") / f"clinica_dl_{time}"
                 ),
                 profile_memory=True,
                 record_shapes=False,
@@ -813,6 +839,8 @@ class MapsManager:
             transfer_path=self.transfer_path,
             transfer_selection=self.transfer_selection_metric,
         )
+        if self.ddp:
+            model = DDP(model, device_ids=[self.local_rank])
 
         criterion = self.task_manager.get_criterion(self.loss)
         logger.debug(f"Criterion for {self.network_task} is {criterion}")
@@ -827,47 +855,41 @@ class MapsManager:
         )
         metrics_valid = {"loss": None}
 
-        log_writer = LogWriter(
-            self.maps_path,
-            self.task_manager.evaluation_metrics + ["loss"],
-            split,
-            resume=resume,
-            beginning_epoch=beginning_epoch,
-            network=network,
-        )
-        epoch = log_writer.beginning_epoch
-
-        retain_best = RetainBest(selection_metrics=list(self.selection_metrics))
-
+        if self.master:
+            log_writer = LogWriter(
+                self.maps_path,
+                self.task_manager.evaluation_metrics + ["loss"],
+                split,
+                resume=resume,
+                beginning_epoch=beginning_epoch,
+                network=network,
+            )
+            retain_best = RetainBest(selection_metrics=list(self.selection_metrics))
+        epoch = beginning_epoch
 
         scaler = GradScaler()
         profiler = self._init_profiler()
 
-        acc_loss = torch.tensor(0., device="cuda")
         while epoch < self.epochs and not early_stopping.step(metrics_valid["loss"]):
             logger.info(f"Beginning epoch {epoch}.")
 
-            model.zero_grad()
+            train_loader.sampler.set_epoch(epoch)
+            model.zero_grad(set_to_none=True)
             evaluation_flag, step_flag = True, True
             with profiler:
                 for i, data in enumerate(train_loader):
-                    if i >= 100:
-                        exit(0)
                     logger.info(f"Step {i+1} / {len(train_loader)}")
                     _, loss_dict = model.compute_outputs_and_loss(data, criterion, amp=self.amp)
                     logger.debug(f"Train loss dictionnary {loss_dict}")
                     loss = loss_dict["loss"]
-                    # loss.backward()
                     scaler.scale(loss).backward()
-                    acc_loss += loss.detach()
-                    logger.info(f"Accloss: {acc_loss}")
                     profiler.step()
 
                     if (i + 1) % self.accumulation_steps == 0:
                         step_flag = False
                         scaler.step(optimizer)
                         scaler.update()
-                        optimizer.zero_grad()
+                        optimizer.zero_grad(set_to_none=True)
 
                         del loss
 
@@ -887,14 +909,14 @@ class MapsManager:
 
                             model.train()
                             train_loader.dataset.train()
-
-                            log_writer.step(
-                                epoch,
-                                i,
-                                metrics_train,
-                                metrics_valid,
-                                len(train_loader),
-                            )
+                            if self.master:
+                                log_writer.step(
+                                    epoch,
+                                    i,
+                                    metrics_train,
+                                    metrics_valid,
+                                    len(train_loader),
+                                )
                             logger.info(
                                 f"{self.mode} level training loss is {metrics_train['loss']} "
                                 f"at the end of iteration {i}"
@@ -921,12 +943,10 @@ class MapsManager:
             # Update weights one last time if gradients were computed without update
             if (i + 1) % self.accumulation_steps != 0:
                 optimizer.step()
-                optimizer.zero_grad()
-
-            logger.info(f"Loss: {acc_loss}")
+                optimizer.zero_grad(set_to_none=True)
 
             # Always test the results and save them once at the end of the epoch
-            model.zero_grad()
+            model.zero_grad(set_to_none=True)
             logger.debug(f"Last checkpoint at the end of the epoch {epoch}")
 
             _, metrics_train = self.task_manager.test(model, train_loader, criterion, amp=self.amp)
@@ -935,7 +955,8 @@ class MapsManager:
             model.train()
             train_loader.dataset.train()
 
-            log_writer.step(epoch, i, metrics_train, metrics_valid, len(train_loader))
+            if self.master:
+                log_writer.step(epoch, i, metrics_train, metrics_valid, len(train_loader))
             logger.info(
                 f"{self.mode} level training loss is {metrics_train['loss']} "
                 f"at the end of iteration {i}"
@@ -945,31 +966,33 @@ class MapsManager:
                 f"at the end of iteration {i}"
             )
 
-            # Save checkpoints and best models
-            best_dict = retain_best.step(metrics_valid)
-            self._write_weights(
-                {
-                    "model": model.state_dict(),
-                    "epoch": epoch,
-                    "name": self.architecture,
-                },
-                best_dict,
-                split,
-                network=network,
-            )
-            self._write_weights(
-                {
-                    "optimizer": optimizer.state_dict(),
-                    "epoch": epoch,
-                    "name": self.optimizer,
-                },
-                None,
-                split,
-                filename="optimizer.pth.tar",
-            )
+            if self.master:
+                # Save checkpoints and best models
+                best_dict = retain_best.step(metrics_valid)
+                self._write_weights(
+                    {
+                        "model": model.state_dict(),
+                        "epoch": epoch,
+                        "name": self.architecture,
+                    },
+                    best_dict,
+                    split,
+                    network=network,
+                )
+                self._write_weights(
+                    {
+                        "optimizer": optimizer.state_dict(),
+                        "epoch": epoch,
+                        "name": self.optimizer,
+                    },
+                    None,
+                    split,
+                    filename="optimizer.pth.tar",
+                )
 
             epoch += 1
 
+        del model
         self._test_loader(
             train_loader,
             criterion,
@@ -1031,18 +1054,19 @@ class MapsManager:
         """
         for selection_metric in selection_metrics:
 
-            log_dir = path.join(
-                self.maps_path,
-                f"{self.split_name}-{split}",
-                f"best-{selection_metric}",
-                data_group,
-            )
-            self.write_description_log(
-                log_dir,
-                data_group,
-                dataloader.dataset.caps_dict,
-                dataloader.dataset.df,
-            )
+            if self.master:
+                log_dir = path.join(
+                    self.maps_path,
+                    f"{self.split_name}-{split}",
+                    f"best-{selection_metric}",
+                    data_group,
+                )
+                self.write_description_log(
+                    log_dir,
+                    data_group,
+                    dataloader.dataset.caps_dict,
+                    dataloader.dataset.df,
+                )
 
             # load the best trained model during the training
             model, _ = self._init_model(
@@ -1052,6 +1076,8 @@ class MapsManager:
                 gpu=gpu,
                 network=network,
             )
+            if self.ddp:
+                model = DDP(model, device_ids=[self.local_rank])
 
             prediction_df, metrics = self.task_manager.test(
                 model, dataloader, criterion, use_labels=use_labels, amp=self.amp
@@ -1063,10 +1089,11 @@ class MapsManager:
                     f"{self.mode} level {data_group} loss is {metrics['loss']} for model selected on {selection_metric}"
                 )
 
-            # Replace here
-            self._mode_level_to_tsv(
-                prediction_df, metrics, split, selection_metric, data_group=data_group
-            )
+            if self.master:
+                # Replace here
+                self._mode_level_to_tsv(
+                    prediction_df, metrics, split, selection_metric, data_group=data_group
+                )
 
     def _compute_output_nifti(
         self,
