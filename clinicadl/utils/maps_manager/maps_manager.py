@@ -91,28 +91,28 @@ class MapsManager:
         # Initiate MAPS
         else:
             self._check_args(parameters)
-
-            if (
-                path.exists(maps_path) and not path.isdir(maps_path)  # Non-folder file
-            ) or (
-                path.isdir(maps_path) and listdir(maps_path)  # Non empty folder
-            ):
-                raise MAPSError(
-                    f"You are trying to create a new MAPS at {maps_path} but "
-                    f"this already corresponds to a file or a non-empty folder. \n"
-                    f"Please remove it or choose another location."
-                )
-            makedirs(path.join(self.maps_path, "groups"))
-
-            logger.info(f"A new MAPS was created at {maps_path}")
-
-            self.write_parameters(self.maps_path, self.parameters)
-            self._write_requirements_version()
-
             self.split_name = "split"  # Used only for retro-compatibility
-            self._write_training_data()
-            self._write_train_val_groups()
-            self._write_information()
+            if self.master:
+                if (
+                    path.exists(maps_path) and not path.isdir(maps_path)  # Non-folder file
+                ) or (
+                    path.isdir(maps_path) and listdir(maps_path)  # Non empty folder
+                ):
+                    raise MAPSError(
+                        f"You are trying to create a new MAPS at {maps_path} but "
+                        f"this already corresponds to a file or a non-empty folder. \n"
+                        f"Please remove it or choose another location."
+                    )
+                makedirs(path.join(self.maps_path, "groups"))
+
+                logger.info(f"A new MAPS was created at {maps_path}")
+
+                self.write_parameters(self.maps_path, self.parameters)
+                self._write_requirements_version()
+
+                self._write_training_data()
+                self._write_train_val_groups()
+                self._write_information()
 
     def __getattr__(self, name):
         """Allow to directly get the values in parameters attribute"""
