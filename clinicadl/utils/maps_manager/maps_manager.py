@@ -26,7 +26,7 @@ from clinicadl.utils.exceptions import (
     ClinicaDLDataLeakageError,
     MAPSError,
 )
-from clinicadl.utils.logger import setup_logging
+from clinicadl.utils.logger import setup_logging, Rank0Filter
 from clinicadl.utils.maps_manager.logwriter import LogWriter
 from clinicadl.utils.maps_manager.maps_manager_utils import (
     add_default_values,
@@ -66,6 +66,14 @@ class MapsManager:
             if verbose not in level_list:
                 raise ValueError(f"verbose value {verbose} must be in {level_list}.")
             setup_logging(level_list.index(verbose))
+        if parameters["ddp"]:
+            self._init_ddp(gpu=parameters["gpu"])
+            logger.addFilter(Rank0Filter(rank=self.rank))
+        else:
+            self.master = True
+            self.rank = 0
+            self.world_size = 1
+            self.local_rank = 0
 
         # Existing MAPS
         if parameters is None:
