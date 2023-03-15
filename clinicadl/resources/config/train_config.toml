@@ -39,7 +39,8 @@ n_proc = 2
 batch_size = 8
 evaluation_steps = 0
 amp = true
-profiler = false
+profiler = true
+ddp = true
 
 [Reproducibility]
 seed = 0

@@ -56,6 +56,12 @@ profiler = cli_param.option_group.computational_group.option(
     default=None,
     help="Use `--profiler` to enable PyTorch profiler."
 )
+ddp = cli_param.option_group.computational_group.option(
+    "--ddp/--no-ddp",
+    type=bool,
+    default=None,
+    help="Use --ddp to use DDP"
+)
 # Reproducibility
 seed = cli_param.option_group.reproducibility_group.option(
     "--seed",
