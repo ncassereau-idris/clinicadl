@@ -83,9 +83,8 @@ class AutoEncoder(Network):
         return code, x
 
     def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True, amp=False):
-
+        images = input_dict["image"].to(self.device, non_blocking=True)
         with autocast(enabled=amp):
-            images = input_dict["image"].to(self.device, non_blocking=True)
             train_output = self.predict(images)
             loss = criterion(train_output, images)
         return train_output, {"loss": loss}
@@ -127,11 +126,11 @@ class CNN(Network):
         return self.forward(x)
 
     def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True, amp=False):
+        images, labels = (
+            input_dict["image"].to(self.device, non_blocking=True),
+            input_dict["label"].to(self.device, non_blocking=True)
+        )
         with autocast(enabled=amp):
-            images, labels = (
-                input_dict["image"].to(self.device, non_blocking=True),
-                input_dict["label"].to(self.device, non_blocking=True)
-            )
             train_output = self.forward(images)
             if use_labels:
                 loss = criterion(train_output, labels)
