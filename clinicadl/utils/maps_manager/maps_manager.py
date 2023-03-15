@@ -183,7 +183,8 @@ class MapsManager:
             split_path = path.join(self.maps_path, f"{self.split_name}-{split}")
             if path.exists(split_path):
                 if overwrite:
-                    shutil.rmtree(split_path)
+                    if self.master:
+                        shutil.rmtree(split_path)
                 else:
                     existing_splits.append(split)
 
@@ -1190,22 +1191,27 @@ class MapsManager:
                 gpu=gpu,
                 network=network,
             )
+            if self.ddp:
+                model = DDP(model, device_ids=[self.local_rank])
 
-            tensor_path = path.join(
-                self.maps_path,
-                f"{self.split_name}-{split}",
-                f"best-{selection_metric}",
-                data_group,
-                "tensors",
-            )
-            makedirs(tensor_path, exist_ok=True)
+            if self.master:
+                tensor_path = path.join(
+                    self.maps_path,
+                    f"{self.split_name}-{split}",
+                    f"best-{selection_metric}",
+                    data_group,
+                    "tensors",
+                )
+                makedirs(tensor_path, exist_ok=True)
+            if self.ddp:
+                dist.barrier()
 
             if nb_images is None:  # Compute outputs for the whole data set
                 nb_modes = len(dataset)
             else:
                 nb_modes = nb_images * dataset.elem_per_image
 
-            for i in range(nb_modes):
+            for i in range(self.rank, nb_modes, self.rank):
                 data = dataset[i]
                 image = data["image"]
                 output = (

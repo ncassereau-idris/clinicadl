@@ -176,7 +176,8 @@ class TaskManager:
         dataloader: DataLoader,
         criterion: _Loss,
         use_labels: bool = True,
-        amp: bool = False
+        amp: bool = False,
+        ddp: bool = False
     ) -> Tuple[pd.DataFrame, Dict[str, float]]:
         """
         Computes the predictions and evaluation metrics.
@@ -188,6 +189,7 @@ class TaskManager:
             use_labels: If True the true_label will be written in output DataFrame
                 and metrics dict will be created.
             amp: If True, use PyTorch's automatic mixed precision
+            ddp: If True, performs collective communication across all processes
         Returns:
             the results and metrics on the image level.
         """
@@ -201,7 +203,7 @@ class TaskManager:
                 outputs, loss_dict = model.compute_outputs_and_loss(
                     data, criterion, use_labels=use_labels, amp=amp
                 )
-                total_loss += loss_dict["loss"].float().item()
+                total_loss += loss_dict["loss"].float()
 
                 # Generate detailed DataFrame
                 for idx in range(len(data["participant_id"])):
@@ -210,13 +212,20 @@ class TaskManager:
                     results_df = pd.concat([results_df, row_df])
 
                 del outputs, loss_dict
-            results_df.reset_index(inplace=True, drop=True)
+        if ddp:
+            dataframes = [None] * dist.get_world_size()
+            dist.all_gather_object(dataframes, results_df)
+            results_df = pd.concat(dataframes)
+            del dataframes
+        results_df.reset_index(inplace=True, drop=True)
 
         if not use_labels:
             metrics_dict = None
         else:
             metrics_dict = self.compute_metrics(results_df)
-            metrics_dict["loss"] = total_loss
+            if ddp:
+                dist.all_reduce(total_loss)
+            metrics_dict["loss"] = total_loss.item()
         torch.cuda.empty_cache()
 
         return results_df, metrics_dict
