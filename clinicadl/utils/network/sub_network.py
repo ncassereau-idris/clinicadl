@@ -46,10 +46,10 @@ class AutoEncoder(Network):
             )
 
     def predict(self, x):
-        _, output = self.forward(x)
+        _, output = self._forward(x)
         return output
 
-    def forward(self, x):
+    def _forward(self, x):
         indices_list = []
         pad_list = []
 
@@ -118,12 +118,12 @@ class CNN(Network):
                 f"Cannot transfer weights from {transfer_class} to CNN."
             )
 
-    def forward(self, x):
+    def _forward(self, x):
         x = self.convolutions(x)
         return self.fc(x)
 
     def predict(self, x):
-        return self.forward(x)
+        return self._forward(x)
 
     def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True, amp=False):
         images, labels = (
@@ -131,7 +131,7 @@ class CNN(Network):
             input_dict["label"].to(self.device, non_blocking=True)
         )
         with autocast(enabled=amp):
-            train_output = self.forward(images)
+            train_output = self._forward(images)
             if use_labels:
                 loss = criterion(train_output, labels)
             else:

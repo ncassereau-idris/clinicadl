@@ -87,7 +87,7 @@ class Network(nn.Module):
         pass
 
     @abc.abstractmethod
-    def forward(self, x):
+    def _forward(self, x):
         pass
 
     @abc.abstractmethod
@@ -96,3 +96,5 @@ class Network(nn.Module):
 
     def transfer_weights(self, state_dict, transfer_class):
         self.load_state_dict(state_dict)
+
+    forward = compute_outputs_and_loss

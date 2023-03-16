@@ -48,9 +48,6 @@ level_list: List[str] = ["warning", "info", "debug"]
 
 
 class DDP(DistributedDataParallel):
-    def compute_outputs_and_loss(self, *args, **kwargs):
-        return self.module.compute_outputs_and_loss(*args, **kwargs)
-
     def predict(self, *args, **kwargs):
         return self.module.predict(*args, **kwargs)
 
@@ -859,7 +856,7 @@ class MapsManager:
             with profiler:
                 for i, data in enumerate(train_loader):
                     logger.info(f"Step {i+1} / {len(train_loader)}")
-                    _, loss_dict = model.compute_outputs_and_loss(data, criterion, amp=self.amp)
+                    _, loss_dict = model(data, criterion, amp=self.amp)
                     logger.debug(f"Train loss dictionnary {loss_dict}")
                     loss = loss_dict["loss"]
                     scaler.scale(loss).backward()
