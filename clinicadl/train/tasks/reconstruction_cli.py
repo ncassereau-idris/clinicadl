@@ -20,6 +20,7 @@ from .task_utils import task_launcher
 @train_option.amp
 @train_option.profiler
 @train_option.ddp
+@train_option.resolver
 # Reproducibility
 @train_option.seed
 @train_option.deterministic

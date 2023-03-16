@@ -39,8 +39,9 @@ n_proc = 2
 batch_size = 8
 evaluation_steps = 0
 amp = true
-profiler = true
+profiler = false
 ddp = true
+resolver = "slurm"
 
 [Reproducibility]
 seed = 0

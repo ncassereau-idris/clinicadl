@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime
 from glob import glob
 from logging import getLogger
-from os import listdir, makedirs, path, environ
+from os import listdir, makedirs, path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
@@ -29,13 +29,13 @@ from clinicadl.utils.exceptions import (
     ClinicaDLDataLeakageError,
     MAPSError,
 )
-from clinicadl.utils.logger import setup_logging, Rank0Filter
+from clinicadl.utils.logger import setup_logging
 from clinicadl.utils.maps_manager.logwriter import LogWriter
 from clinicadl.utils.maps_manager.maps_manager_utils import (
     add_default_values,
     read_json,
 )
-from clinicadl.utils.maps_manager.cluster_resolver import SlurmClusterResolver
+from clinicadl.utils.maps_manager.ddp import get_ddp_manager
 from clinicadl.utils.metric_module import RetainBest
 from clinicadl.utils.network.network import Network
 from clinicadl.utils.seed import get_seed, pl_worker_init_function, seed_everything
@@ -81,14 +81,6 @@ class MapsManager:
             if verbose not in level_list:
                 raise ValueError(f"verbose value {verbose} must be in {level_list}.")
             setup_logging(level_list.index(verbose))
-        if parameters["ddp"]:
-            self._init_ddp(gpu=parameters["gpu"])
-            logger.addFilter(Rank0Filter(rank=self.rank))
-        else:
-            self.master = True
-            self.rank = 0
-            self.world_size = 1
-            self.local_rank = 0
 
         # Existing MAPS
         if parameters is None:
@@ -98,6 +90,12 @@ class MapsManager:
                     f"To initiate a new MAPS please give a train_dict."
                 )
             self.parameters = self.get_parameters()
+            self.ddp = get_ddp_manager(
+                ddp=self.parameters["ddp"],
+                resolver=self.parameters["resolver"],
+                gpu=self.parameters["gpu"],
+                logger=logger
+            )
             self.task_manager = self._init_task_manager(n_classes=self.output_size)
             self.split_name = (
                 self._check_split_wording()
@@ -106,8 +104,14 @@ class MapsManager:
         # Initiate MAPS
         else:
             self._check_args(parameters)
+            self.ddp = get_ddp_manager(
+                ddp=parameters["ddp"],
+                resolver=parameters["resolver"],
+                gpu=parameters["gpu"],
+                logger=logger
+            )
             self.split_name = "split"  # Used only for retro-compatibility
-            if self.master:
+            if self.ddp.master:
                 if (
                     path.exists(maps_path) and not path.isdir(maps_path)  # Non-folder file
                 ) or (
@@ -136,23 +140,6 @@ class MapsManager:
         else:
             raise AttributeError(f"'MapsManager' object has no attribute '{name}'")
 
-    def _init_ddp(self, gpu: bool = True):
-        cluster_resolver = SlurmClusterResolver()
-        self.rank = cluster_resolver.rank
-        self.local_rank = cluster_resolver.local_rank
-        self.world_size = cluster_resolver.world_size
-        self.master = cluster_resolver.master
-        environ['MASTER_ADDR'] = cluster_resolver.master_addr
-        environ['MASTER_PORT'] = str(cluster_resolver.master_port)
-        dist.init_process_group(
-            backend='nccl' if gpu else "gloo",
-            init_method='env://',
-            world_size=self.world_size,
-            rank=self.rank
-        )
-        if gpu:
-            torch.cuda.set_device(self.local_rank)
-
     def train(self, split_list: List[int] = None, overwrite: bool = False):
         """
         Performs the training task for a defined list of splits
@@ -173,7 +160,7 @@ class MapsManager:
             split_path = path.join(self.maps_path, f"{self.split_name}-{split}")
             if path.exists(split_path):
                 if overwrite:
-                    if self.master:
+                    if self.ddp.master:
                         shutil.rmtree(split_path)
                 else:
                     existing_splits.append(split)
@@ -618,7 +605,7 @@ class MapsManager:
                 label_code=self.label_code,
             )
             train_sampler = self.task_manager.generate_sampler(
-                data_train, self.sampler, world_size=self.world_size, rank=self.rank
+                data_train, self.sampler, world_size=self.ddp.world_size, rank=self.ddp.rank
             )
 
             logger.debug(
@@ -636,8 +623,8 @@ class MapsManager:
             logger.debug(f"Train loader size is {len(train_loader)}")
             valid_sampler = DistributedSampler(
                 data_valid,
-                num_replicas=self.world_size,
-                rank=self.rank,
+                num_replicas=self.ddp.world_size,
+                rank=self.ddp.rank,
                 shuffle=False
             )
             valid_loader = DataLoader(
@@ -788,9 +775,8 @@ class MapsManager:
             from pathlib import Path
             time = str(datetime.now().time())[:8]
             filename = [Path("profiler") / f"clinica_dl_{time}"]
-            if self.ddp:
-                # make sure they all write in the same file
-                dist.broadcast_object_list(filename, src=0)
+            # make sure they all write in the same file
+            dist.broadcast_object_list(filename, src=0)
             profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 schedule=schedule(wait=2, warmup=2, active=30, repeat=1),
@@ -831,8 +817,7 @@ class MapsManager:
             transfer_path=self.transfer_path,
             transfer_selection=self.transfer_selection_metric,
         )
-        if self.ddp:
-            model = DDP(model, device_ids=[self.local_rank])
+        model = DDP(model, device_ids=[self.ddp.local_rank])
 
         criterion = self.task_manager.get_criterion(self.loss)
         logger.debug(f"Criterion for {self.network_task} is {criterion}")
@@ -847,7 +832,7 @@ class MapsManager:
         )
         metrics_valid = {"loss": None}
 
-        if self.master:
+        if self.ddp.master:
             log_writer = LogWriter(
                 self.maps_path,
                 self.task_manager.evaluation_metrics + ["loss"],
@@ -893,15 +878,15 @@ class MapsManager:
                             evaluation_flag = False
 
                             _, metrics_train = self.task_manager.test(
-                                model, train_loader, criterion
+                                model, train_loader, criterion, amp=self.amp
                             )
                             _, metrics_valid = self.task_manager.test(
-                                model, valid_loader, criterion
+                                model, valid_loader, criterion, amp=self.amp
                             )
 
                             model.train()
                             train_loader.dataset.train()
-                            if self.master:
+                            if self.ddp.master:
                                 log_writer.step(
                                     epoch,
                                     i,
@@ -947,7 +932,7 @@ class MapsManager:
             model.train()
             train_loader.dataset.train()
 
-            if self.master:
+            if self.ddp.master:
                 log_writer.step(epoch, i, metrics_train, metrics_valid, len(train_loader))
             logger.info(
                 f"{self.mode} level training loss is {metrics_train['loss']} "
@@ -958,7 +943,7 @@ class MapsManager:
                 f"at the end of iteration {i}"
             )
 
-            if self.master:
+            if self.ddp.master:
                 # Save checkpoints and best models
                 best_dict = retain_best.step(metrics_valid)
                 self._write_weights(
@@ -1046,7 +1031,7 @@ class MapsManager:
         """
         for selection_metric in selection_metrics:
 
-            if self.master:
+            if self.ddp.master:
                 log_dir = path.join(
                     self.maps_path,
                     f"{self.split_name}-{split}",
@@ -1068,8 +1053,7 @@ class MapsManager:
                 gpu=gpu,
                 network=network,
             )
-            if self.ddp:
-                model = DDP(model, device_ids=[self.local_rank])
+            model = DDP(model, device_ids=[self.ddp.local_rank])
 
             prediction_df, metrics = self.task_manager.test(
                 model, dataloader, criterion, use_labels=use_labels, amp=self.amp
@@ -1081,7 +1065,7 @@ class MapsManager:
                     f"{self.mode} level {data_group} loss is {metrics['loss']} for model selected on {selection_metric}"
                 )
 
-            if self.master:
+            if self.ddp.master:
                 # Replace here
                 self._mode_level_to_tsv(
                     prediction_df, metrics, split, selection_metric, data_group=data_group
@@ -1182,27 +1166,25 @@ class MapsManager:
                 gpu=gpu,
                 network=network,
             )
-            if self.ddp:
-                model = DDP(model, device_ids=[self.local_rank])
+            model = DDP(model, device_ids=[self.ddp.local_rank])
 
-            if self.master:
-                tensor_path = path.join(
-                    self.maps_path,
-                    f"{self.split_name}-{split}",
-                    f"best-{selection_metric}",
-                    data_group,
-                    "tensors",
-                )
+            tensor_path = path.join(
+                self.maps_path,
+                f"{self.split_name}-{split}",
+                f"best-{selection_metric}",
+                data_group,
+                "tensors",
+            )
+            if self.ddp.master:
                 makedirs(tensor_path, exist_ok=True)
-            if self.ddp:
-                dist.barrier()
+            dist.barrier()
 
             if nb_images is None:  # Compute outputs for the whole data set
                 nb_modes = len(dataset)
             else:
                 nb_modes = nb_images * dataset.elem_per_image
 
-            for i in range(self.rank, nb_modes, self.rank):
+            for i in range(self.ddp.rank, nb_modes, self.ddp.rank):
                 data = dataset[i]
                 image = data["image"]
                 output = (

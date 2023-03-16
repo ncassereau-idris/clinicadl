@@ -177,7 +177,6 @@ class TaskManager:
         criterion: _Loss,
         use_labels: bool = True,
         amp: bool = False,
-        ddp: bool = False
     ) -> Tuple[pd.DataFrame, Dict[str, float]]:
         """
         Computes the predictions and evaluation metrics.
@@ -212,19 +211,17 @@ class TaskManager:
                     results_df = pd.concat([results_df, row_df])
 
                 del outputs, loss_dict
-        if ddp:
-            dataframes = [None] * dist.get_world_size()
-            dist.all_gather_object(dataframes, results_df)
-            results_df = pd.concat(dataframes)
-            del dataframes
+        dataframes = [None] * dist.get_world_size()
+        dist.gather_object(results_df, dataframes if dist.get_rank() == 0 else None, dst=0)
+        results_df = pd.concat(dataframes)
+        del dataframes
         results_df.reset_index(inplace=True, drop=True)
 
         if not use_labels:
             metrics_dict = None
         else:
             metrics_dict = self.compute_metrics(results_df)
-            if ddp:
-                dist.all_reduce(total_loss)
+            dist.reduce(total_loss, dst=0)
             metrics_dict["loss"] = total_loss.item()
         torch.cuda.empty_cache()
 

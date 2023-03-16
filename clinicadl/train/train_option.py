@@ -62,6 +62,12 @@ ddp = cli_param.option_group.computational_group.option(
     default=None,
     help="Use --ddp to use DDP"
 )
+resolver = cli_param.option_group.computational_group.option(
+    "--resolver", "--cluster-resolver",
+    type=str,
+    default=None,
+    help="Name of the resolver to use DDP"
+)
 # Reproducibility
 seed = cli_param.option_group.reproducibility_group.option(
     "--seed",
