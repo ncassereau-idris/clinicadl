@@ -786,15 +786,15 @@ class MapsManager:
             )
             from datetime import datetime
             from pathlib import Path
-            if self.ddp:
-                dist.barrier() # make sure they are all synchronized so they have the same profiler file
             time = str(datetime.now().time())[:8]
+            filename = [Path("profiler") / f"clinica_dl_{time}"]
+            if self.ddp:
+                # make sure they all write in the same file
+                dist.broadcast_object_list(filename, src=0)
             profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                 schedule=schedule(wait=2, warmup=2, active=30, repeat=1),
-                on_trace_ready=tensorboard_trace_handler(
-                    Path("profiler") / f"clinica_dl_{time}"
-                ),
+                on_trace_ready=tensorboard_trace_handler(filename[0]),
                 profile_memory=True,
                 record_shapes=False,
                 with_stack=False,
