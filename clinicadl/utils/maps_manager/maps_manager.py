@@ -630,6 +630,7 @@ class MapsManager:
                 sampler=train_sampler,
                 num_workers=self.n_proc,
                 pin_memory=True,
+                persistent_workers=True,
                 worker_init_fn=pl_worker_init_function,
             )
             logger.debug(f"Train loader size is {len(train_loader)}")
