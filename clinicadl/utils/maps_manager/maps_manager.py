@@ -855,7 +855,6 @@ class MapsManager:
             evaluation_flag, step_flag = True, True
             with profiler:
                 for i, data in enumerate(train_loader):
-                    logger.info(f"Step {i+1} / {len(train_loader)}")
                     _, loss_dict = model(data, criterion, amp=self.amp)
                     logger.debug(f"Train loss dictionnary {loss_dict}")
                     loss = loss_dict["loss"]
