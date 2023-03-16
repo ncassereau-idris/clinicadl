@@ -791,7 +791,7 @@ class MapsManager:
             time = str(datetime.now().time())[:8]
             profiler = profile(
                 activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                schedule=schedule(wait=1, warmup=1, active=10, repeat=1),
+                schedule=schedule(wait=2, warmup=2, active=30, repeat=1),
                 on_trace_ready=tensorboard_trace_handler(
                     Path("profiler") / f"clinica_dl_{time}"
                 ),
