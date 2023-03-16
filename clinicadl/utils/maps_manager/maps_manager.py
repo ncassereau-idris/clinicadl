@@ -57,6 +57,9 @@ class DDP(DistributedDataParallel):
     def transfer_weights(self, *args, **kwargs):
         return self.module.transfer_weights(*args, **kwargs)
 
+    def state_dict(self):
+        return self.module.state_dict()
+
 
 class MapsManager:
     def __init__(
