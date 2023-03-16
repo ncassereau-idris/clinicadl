@@ -188,7 +188,6 @@ class TaskManager:
             use_labels: If True the true_label will be written in output DataFrame
                 and metrics dict will be created.
             amp: If True, use PyTorch's automatic mixed precision
-            ddp: If True, performs collective communication across all processes
         Returns:
             the results and metrics on the image level.
         """
