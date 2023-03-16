@@ -161,7 +161,7 @@ class DDPManager:
         if resolver.lower() == "slurm":
             return SlurmClusterResolver()
         else:
-            raise NotImplementedError("This resolved has not been implemented yet")
+            raise NotImplementedError("This resolver has not been implemented yet")
 
     @property
     def rank(self) -> int:
