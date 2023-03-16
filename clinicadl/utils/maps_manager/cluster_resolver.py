@@ -1,8 +1,8 @@
 import os
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 
 
-class ClusterResolver:
+class ClusterResolver(ABC):
 
     def __init__(self):
         pass
