@@ -91,11 +91,11 @@ class Network(nn.Module):
         pass
 
     @abc.abstractmethod
-    def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True, amp=False):
+    def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True):
         pass
 
     def transfer_weights(self, state_dict, transfer_class):
         self.load_state_dict(state_dict)
 
-    def forward(self, input_dict, criterion, use_labels=True, amp=False):
-        return self.compute_outputs_and_loss(input_dict, criterion, use_labels, amp)
+    def forward(self, input_dict, criterion, use_labels=True):
+        return self.compute_outputs_and_loss(input_dict, criterion, use_labels)

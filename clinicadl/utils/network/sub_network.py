@@ -3,7 +3,6 @@ from collections import OrderedDict
 from logging import getLogger
 
 import torch
-from torch.cuda.amp import autocast
 from torch import nn
 
 from clinicadl.utils.exceptions import ClinicaDLNetworksError
@@ -82,11 +81,10 @@ class AutoEncoder(Network):
 
         return code, x
 
-    def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True, amp=False):
+    def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True):
         images = input_dict["image"].to(self.device, non_blocking=True)
-        with autocast(enabled=amp):
-            train_output = self.predict(images)
-            loss = criterion(train_output, images)
+        train_output = self.predict(images)
+        loss = criterion(train_output, images)
         return train_output, {"loss": loss}
 
 
@@ -125,16 +123,15 @@ class CNN(Network):
     def predict(self, x):
         return self._forward(x)
 
-    def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True, amp=False):
+    def compute_outputs_and_loss(self, input_dict, criterion, use_labels=True):
         images, labels = (
             input_dict["image"].to(self.device, non_blocking=True),
             input_dict["label"].to(self.device, non_blocking=True)
         )
-        with autocast(enabled=amp):
-            train_output = self._forward(images)
-            if use_labels:
-                loss = criterion(train_output, labels)
-            else:
-                loss = torch.Tensor([0])
+        train_output = self._forward(images)
+        if use_labels:
+            loss = criterion(train_output, labels)
+        else:
+            loss = torch.Tensor([0])
 
         return train_output, {"loss": loss}
