@@ -1187,7 +1187,7 @@ class MapsManager:
             else:
                 nb_modes = nb_images * dataset.elem_per_image
 
-            for i in range(self.ddp.rank, nb_modes, self.ddp.rank):
+            for i in range(self.ddp.rank, nb_modes, self.ddp.world_size):
                 data = dataset[i]
                 image = data["image"]
                 output = (
