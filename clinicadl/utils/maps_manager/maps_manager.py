@@ -654,8 +654,8 @@ class MapsManager:
                 split,
                 self.selection_metrics,
             )
-
-            self._erase_tmp(split)
+            if self.ddp.master:
+                self._erase_tmp(split)
 
     def _train_multi(self, split_list: List[int] = None, resume: bool = False):
         """
