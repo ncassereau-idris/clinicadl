@@ -61,14 +61,22 @@ class SlurmClusterResolver(ClusterResolver):
     def __init__(self):
         super().__init__()
         self.reference_port = 12345
-        self.rank = int(os.environ["SLURM_PROCID"])
-        self.world_size = int(os.environ["SLURM_NTASKS"])
-        self.local_rank = int(os.environ["SLURM_LOCALID"])
-        self.master = self.rank == 0
-        self.master_addr = self.get_first_host(os.environ["SLURM_JOB_NODELIST"])
 
-        # to avoid port conflict on the same node
-        self.master_port = self.reference_port + int(min(os.environ['SLURM_STEP_GPUS'].split(",")))
+    @property
+    def rank(self) -> int:
+        return int(os.environ["SLURM_PROCID"])
+
+    @property
+    def world_size(self) -> int:
+        return int(os.environ["SLURM_NTASKS"])
+
+    @property
+    def local_rank(self) -> int:
+        return int(os.environ["SLURM_LOCALID"])
+
+    @property
+    def master(self) -> bool:
+        return self.rank == 0
 
     @staticmethod
     def get_first_host(hostlist: str) -> str:
@@ -79,3 +87,11 @@ class SlurmClusterResolver(ClusterResolver):
         for i in range(len(new_values)):
             hostlist = sub(regex, new_values[i], hostlist, count=1)
         return hostlist.split(",")[0]
+
+    @property
+    def master_addr(self) -> str:
+        return self.get_first_host(os.environ["SLURM_JOB_NODELIST"])
+
+    @property
+    def master_port(self) -> int:
+        return self.reference_port + int(min(os.environ['SLURM_STEP_GPUS'].split(",")))
