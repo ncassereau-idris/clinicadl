@@ -97,4 +97,5 @@ class Network(nn.Module):
     def transfer_weights(self, state_dict, transfer_class):
         self.load_state_dict(state_dict)
 
-    forward = compute_outputs_and_loss
+    def forward(self, input_dict, criterion, use_labels=True, amp=False):
+        return self.compute_outputs_and_loss(input_dict, criterion, use_labels, amp)
