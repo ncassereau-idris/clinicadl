@@ -213,7 +213,8 @@ class TaskManager:
                 del outputs, loss_dict
         dataframes = [None] * dist.get_world_size()
         dist.gather_object(results_df, dataframes if dist.get_rank() == 0 else None, dst=0)
-        results_df = pd.concat(dataframes)
+        if dist.get_rank() == 0:
+            results_df = pd.concat(dataframes)
         del dataframes
         results_df.reset_index(inplace=True, drop=True)
 
