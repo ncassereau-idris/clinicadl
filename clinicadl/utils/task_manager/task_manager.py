@@ -198,7 +198,7 @@ class TaskManager:
         total_loss = 0
         with torch.no_grad():
             for i, data in enumerate(dataloader):
-                outputs, loss_dict = model.compute_outputs_and_loss(
+                outputs, loss_dict = model(
                     data, criterion, use_labels=use_labels, amp=amp
                 )
                 total_loss += loss_dict["loss"].float()
