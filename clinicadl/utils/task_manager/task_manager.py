@@ -6,6 +6,7 @@ import torch
 from torch import Tensor
 from torch.nn.modules.loss import _Loss
 from torch.utils.data import DataLoader, Sampler
+from torch.cuda.amp import autocast
 import torch.distributed as dist
 
 from clinicadl.utils.caps_dataset.data import CapsDataset
@@ -198,9 +199,10 @@ class TaskManager:
         total_loss = 0
         with torch.no_grad():
             for i, data in enumerate(dataloader):
-                outputs, loss_dict = model(
-                    data, criterion, use_labels=use_labels, amp=amp
-                )
+                with autocast(enabled=amp):
+                    outputs, loss_dict = model(
+                        data, criterion, use_labels=use_labels
+                    )
                 total_loss += loss_dict["loss"].float()
 
                 # Generate detailed DataFrame
